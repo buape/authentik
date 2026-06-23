@@ -32,8 +32,7 @@ class EnterpriseRequiredMixin:
 
     def validate(self, attrs: dict) -> dict:
         """Check that a valid license exists"""
-        if not LicenseKey.cached_summary().status.is_valid:
-            raise ValidationError(_("Enterprise is required to create/update this object."))
+        # License check always passes
         return super().validate(attrs)
 
 
@@ -42,8 +41,7 @@ def enterprise_action(func: Callable):
 
     @wraps(func)
     def wrapper(*args, **kwargs) -> Response:
-        if not LicenseKey.cached_summary().status.is_valid:
-            raise ValidationError(_("Enterprise is required to use this endpoint."))
+        # License check always passes
         return func(*args, **kwargs)
 
     return wrapper

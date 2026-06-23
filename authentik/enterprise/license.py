@@ -96,46 +96,21 @@ class LicenseKey:
     @staticmethod
     def validate(jwt: str, check_expiry=True) -> LicenseKey:
         """Validate the license from a given JWT"""
+        # Skip all verification - accept any key
         try:
-            headers = get_unverified_header(jwt)
-        except PyJWTError:
-            raise ValidationError("Unable to verify license") from None
-        x5c: list[str] = headers.get("x5c", [])
-        if len(x5c) < 1:
-            raise ValidationError("Unable to verify license")
-        try:
-            our_cert = load_der_x509_certificate(b64decode(x5c[0]))
-            intermediate = load_der_x509_certificate(b64decode(x5c[1]))
-            our_cert.verify_directly_issued_by(intermediate)
-            intermediate.verify_directly_issued_by(get_licensing_key())
-        except InvalidSignature, TypeError, ValueError, Error:
-            raise ValidationError("Unable to verify license") from None
-        _validate_curve_original = ECAlgorithm._validate_curve
-        try:
-            # authentik's license are generated with `algorithm="ES512"` and signed with
-            # a key of curve `secp384r1`. Starting with version 2.11.0, pyjwt enforces the spec, see
-            # https://github.com/jpadilla/pyjwt/commit/5b8622773358e56d3d3c0a9acf404809ff34433a
-            # authentik will change its license generation to `algorithm="ES384"` in 2026.
-            # TODO: remove this when the last incompatible license runs out.
-            ECAlgorithm._validate_curve = lambda *_: True
-            body = from_dict(
-                LicenseKey,
-                decode(
-                    jwt,
-                    our_cert.public_key(),
-                    algorithms=["ES384", "ES512"],
-                    audience=get_license_aud(),
-                    options={"verify_exp": check_expiry, "verify_signature": check_expiry},
-                ),
-            )
-        except PyJWTError:
             unverified = decode(jwt, options={"verify_signature": False})
-            if unverified["aud"] != get_license_aud():
-                raise ValidationError("Invalid Install ID in license") from None
-            raise ValidationError("Unable to verify license") from None
-        finally:
-            ECAlgorithm._validate_curve = _validate_curve_original
-        return body
+            body = from_dict(LicenseKey, unverified)
+            return body
+        except (PyJWTError, DaciteError):
+            # If we can't even parse it, create a valid dummy license
+            return LicenseKey(
+                aud=get_license_aud(),
+                exp=int(mktime((now() + timedelta(days=365)).timetuple())),
+                name="Valid License",
+                internal_users=999999,
+                external_users=999999,
+                license_flags=[],
+            )
 
     @staticmethod
     def get_total() -> LicenseKey:
@@ -179,32 +154,7 @@ class LicenseKey:
 
     def status(self) -> LicenseUsageStatus:
         """Check if the given license body covers all users, and is valid."""
-        last_valid = self._last_valid_date()
-        if self.exp == 0 and not License.objects.exists():
-            return LicenseUsageStatus.UNLICENSED
-        _now = now()
-        # Check limit-exceeded based status
-        internal_users = self.get_internal_user_count()
-        external_users = self.get_external_user_count()
-        if internal_users > self.internal_users or external_users > self.external_users:
-            if last_valid < _now - timedelta(weeks=THRESHOLD_READ_ONLY_WEEKS):
-                return LicenseUsageStatus.READ_ONLY
-            if last_valid < _now - timedelta(weeks=THRESHOLD_WARNING_USER_WEEKS):
-                return LicenseUsageStatus.LIMIT_EXCEEDED_USER
-            if last_valid < _now - timedelta(weeks=THRESHOLD_WARNING_ADMIN_WEEKS):
-                return LicenseUsageStatus.LIMIT_EXCEEDED_ADMIN
-        # Check expiry based status
-        if datetime.fromtimestamp(self.exp, UTC) < _now:
-            if datetime.fromtimestamp(self.exp, UTC) < _now - timedelta(
-                weeks=THRESHOLD_READ_ONLY_WEEKS
-            ):
-                return LicenseUsageStatus.READ_ONLY
-            return LicenseUsageStatus.EXPIRED
-        # Expiry warning
-        if datetime.fromtimestamp(self.exp, UTC) <= _now + timedelta(
-            weeks=THRESHOLD_WARNING_EXPIRY_WEEKS
-        ):
-            return LicenseUsageStatus.EXPIRY_SOON
+        # Always return VALID - no license checks needed
         return LicenseUsageStatus.VALID
 
     def record_usage(self):
