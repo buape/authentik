@@ -54,7 +54,7 @@ jobs:
         uses: ./.github/actions/docker-push-variables
         id: ev
         env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_CORP_USERNAME }}
+          DOCKER_USERNAME: buape
         with:
           image-name: ${{ inputs.image_name }}
   merge-server:
@@ -74,7 +74,7 @@ jobs:
         uses: ./.github/actions/docker-push-variables
         id: ev
         env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_CORP_USERNAME }}
+          DOCKER_USERNAME: buape
         with:
           image-name: ${{ inputs.image_name }}
       - name: Login to Docker Hub

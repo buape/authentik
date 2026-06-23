@@ -17,9 +17,9 @@ jobs:
       id-token: write
       attestations: write
     with:
-      image_name: ghcr.io/goauthentik/server,authentik/server
+      image_name: ghcr.io/buape/authentik-server
       release: true
-      registry_dockerhub: true
+      registry_dockerhub: false
       registry_ghcr: true
   build-docs:
     runs-on: ubuntu-latest
@@ -40,9 +40,9 @@ jobs:
         uses: ./.github/actions/docker-push-variables
         id: ev
         env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_CORP_USERNAME }}
+          DOCKER_USERNAME: buape
         with:
-          image-name: ghcr.io/goauthentik/docs
+          image-name: ghcr.io/buape/authentik-docs
       - name: Login to GitHub Container Registry
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
@@ -79,9 +79,6 @@ jobs:
       matrix:
         type:
           - proxy
-          - ldap
-          - radius
-          - rac
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v5
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -100,14 +97,9 @@ jobs:
         uses: ./.github/actions/docker-push-variables
         id: ev
         env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_CORP_USERNAME }}
+          DOCKER_USERNAME: buape
         with:
-          image-name: ghcr.io/goauthentik/${{ matrix.type }},authentik/${{ matrix.type }}
-      - name: Docker Login Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          username: ${{ secrets.DOCKER_CORP_USERNAME }}
-          password: ${{ secrets.DOCKER_CORP_PASSWORD }}
+          image-name: ghcr.io/buape/authentik-${{ matrix.type }}
       - name: Login to GitHub Container Registry
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
@@ -227,9 +219,9 @@ jobs:
         uses: ./.github/actions/docker-push-variables
         id: ev
         env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_CORP_USERNAME }}
+          DOCKER_USERNAME: buape
         with:
-          image-name: ghcr.io/goauthentik/server
+          image-name: ghcr.io/buape/authentik-server
       - name: Get static files from docker image
         run: |
           docker pull ${{ steps.ev.outputs.imageMainName }}
