@@ -1,7 +1,6 @@
 """Dynamically set SameSite depending if the upstream connection is TLS or not"""
 
 from collections.abc import Callable
-from hashlib import sha512
 from ipaddress import ip_address
 from time import perf_counter, time
 from typing import Any
@@ -21,12 +20,15 @@ from jwt import PyJWTError, decode, encode
 from sentry_sdk import Scope
 from structlog.stdlib import get_logger
 
+from authentik.core import user_switching
 from authentik.core.models import Token, TokenIntents, User, UserTypes
 from authentik.lib.config import CONFIG
+from authentik.lib.utils.crypto import get_cookie_signing_key
+from authentik.lib.utils.errors import exception_to_dict
 
 LOGGER = get_logger("authentik.asgi")
 ACR_AUTHENTIK_SESSION = "goauthentik.io/core/default"
-SIGNING_HASH = sha512(settings.SECRET_KEY.encode()).hexdigest()
+SIGNING_HASH = get_cookie_signing_key()
 
 
 class SessionMiddleware(UpstreamSessionMiddleware):
@@ -81,6 +83,10 @@ class SessionMiddleware(UpstreamSessionMiddleware):
     def process_request(self, request: HttpRequest):
         raw_session = request.COOKIES.get(settings.SESSION_COOKIE_NAME)
         session_key = SessionMiddleware.decode_session_key(raw_session)
+        request.user_switching_token = user_switching.decode_cookie(
+            request.COOKIES.get(settings.USER_SWITCHING_COOKIE_NAME)
+        )
+        request.user_switching_token_needs_update = False
         request.session = self.SessionStore(
             session_key,
             last_ip=ClientIPMiddleware.get_client_ip(request),
@@ -94,6 +100,7 @@ class SessionMiddleware(UpstreamSessionMiddleware):
         the session cookie if the session has been emptied.
         """
         try:
+            user_switching.reconcile_session(request)
             accessed = request.session.accessed
             modified = request.session.modified
             empty = request.session.is_empty()
@@ -145,6 +152,18 @@ class SessionMiddleware(UpstreamSessionMiddleware):
                         httponly=settings.SESSION_COOKIE_HTTPONLY or None,
                         samesite=same_site,
                     )
+        # Keep the user-switching cookie longer-lived than the sessions it groups.
+        # It is intentionally not deleted with the session cookie.
+        if request.user_switching_token and request.user_switching_token_needs_update:
+            response.set_cookie(
+                settings.USER_SWITCHING_COOKIE_NAME,
+                user_switching.encode_cookie(request.user_switching_token),
+                max_age=settings.USER_SWITCHING_COOKIE_AGE,
+                domain=settings.SESSION_COOKIE_DOMAIN,
+                path=settings.SESSION_COOKIE_PATH,
+                secure=secure,
+                samesite=same_site,
+            )
         return response
 
 
@@ -299,17 +318,18 @@ class ChannelsLoggingMiddleware:
         except Exception as exc:
             if settings.DEBUG or settings.TEST:
                 raise exc
-            LOGGER.warning("Exception in ASGI application", exc=exc)
+            LOGGER.warning("Exception in ASGI application", exc=exception_to_dict(exc))
             return await send({"type": "websocket.close"})
 
     def log(self, scope: dict, **kwargs):
         """Log request"""
         headers = dict(scope.get("headers", {}))
+        # Header values are raw bytes and aren't guaranteed to be UTF-8
         LOGGER.info(
             scope["path"],
             scheme="ws",
-            remote=headers.get(b"x-forwarded-for", b"").decode(),
-            user_agent=headers.get(b"user-agent", b"").decode(),
+            remote=headers.get(b"x-forwarded-for", b"").decode(errors="backslashreplace"),
+            user_agent=headers.get(b"user-agent", b"").decode(errors="backslashreplace"),
             **kwargs,
         )
 
@@ -339,6 +359,9 @@ class LoggingMiddleware:
 
     def log(self, request: HttpRequest, status_code: int, runtime: int, **kwargs):
         """Log request"""
+        # Those are logged by the server above
+        if request.path in ("/-/metrics/", "/-/health/live/", "/-/health/ready/"):
+            return
         for header in self.headers_to_log:
             header_value = request.headers.get(header)
             if not header_value:

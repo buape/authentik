@@ -15,6 +15,7 @@ from authentik.core.api.utils import JSONDictField, ModelSerializer
 from authentik.rbac.permissions import HasPermission
 from authentik.tenants.flags import Flag
 from authentik.tenants.models import Tenant
+from authentik.tenants.utils import normalize_base_url
 
 
 class FlagJSONField(JSONDictField):
@@ -32,9 +33,10 @@ class FlagJSONField(JSONDictField):
             # Exclude any system flags that aren't modifiable
             if _flag.visibility == "system":
                 new_value.pop(_flag.key, None)
+                continue
             # Explicitly present unset flags as if they were set to default
-            if _flag.key not in value:
-                value[_flag.key] = _flag.default
+            if _flag.key not in new_value:
+                new_value[_flag.key] = _flag.default
         return super().to_representation(new_value)
 
     def run_validators(self, value: dict):
@@ -80,6 +82,7 @@ class SettingsSerializer(ModelSerializer):
         model = Tenant
         fields = [
             "avatars",
+            "base_url",
             "default_user_change_name",
             "default_user_change_email",
             "default_user_change_username",
@@ -96,6 +99,9 @@ class SettingsSerializer(ModelSerializer):
             "pagination_max_page_size",
             "flags",
         ]
+
+    def validate_base_url(self, value: str) -> str:
+        return normalize_base_url(value)
 
 
 class SettingsView(RetrieveUpdateAPIView):

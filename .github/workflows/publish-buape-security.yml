@@ -1,19 +1,15 @@
 name: Publish Buape Security Image
 
 on:
-  push:
-    branches: [buape]
-    paths:
-      - lifecycle/container/Dockerfile
-      - Cargo.toml
-      - Cargo.lock
-      - uv.lock
-      - .github/workflows/publish-buape-security.yml
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
+
+concurrency:
+  group: buape-authentik-image-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -21,7 +17,6 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
@@ -32,13 +27,26 @@ jobs:
         with:
           context: .
           file: lifecycle/container/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           pull: true
-          no-cache: true
-          push: true
+          load: true
           tags: |
-            ghcr.io/buape/authentik-server:2026.5.3-ca-20261022
+            ghcr.io/buape/authentik-server:2026.8.5-buape-20261102
             ghcr.io/buape/authentik-server:sha-${{ github.sha }}
+          cache-from: type=gha,scope=authentik-server-amd64
+          cache-to: type=gha,mode=max,scope=authentik-server-amd64
           build-args: |
-            VERSION=2026.5.3
+            VERSION=2026.8.5
             GIT_BUILD_HASH=${{ github.sha }}
+      - name: Verify image version and trust store before publishing
+        run: |
+          image=ghcr.io/buape/authentik-server:2026.8.5-buape-20261102
+          docker run --rm --entrypoint /ak-root/.venv/bin/python "$image" -c 'import authentik; assert authentik.VERSION == "2026.8.5", authentik.VERSION; print("authentik", authentik.VERSION)'
+          docker run --rm --entrypoint /bin/sh "$image" -ec 'version=$(dpkg-query -W -f="\${Version}" ca-certificates); dpkg --compare-versions "$version" ge 20250419+deb13u1; echo "ca-certificates $version"'
+      - name: Publish verified image
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          docker push ghcr.io/buape/authentik-server:2026.8.5-buape-20261102
+          docker push "ghcr.io/buape/authentik-server:sha-$SHA"
+          docker image inspect ghcr.io/buape/authentik-server:2026.8.5-buape-20261102 --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"

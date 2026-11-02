@@ -4,8 +4,7 @@ from dataclasses import dataclass
 
 import xmlsec
 from cryptography.hazmat.backends import default_backend
-from cryptography.x509 import load_pem_x509_certificate
-from defusedxml.lxml import fromstring
+from cryptography.x509 import InvalidVersion, load_pem_x509_certificate
 from lxml import etree  # nosec
 from structlog.stdlib import get_logger
 
@@ -17,6 +16,7 @@ from authentik.common.saml.constants import (
 )
 from authentik.crypto.models import CertificateKeyPair, format_cert
 from authentik.flows.models import Flow
+from authentik.lib.xml import lxml_from_string
 from authentik.providers.saml.models import SAMLBindings, SAMLPropertyMapping, SAMLProvider
 from authentik.sources.saml.models import SAMLNameIDPolicy
 
@@ -90,7 +90,10 @@ class ServiceProviderMetadataParser:
             return None
         raw_cert = format_cert(signing_certs[0])
         # sanity check, make sure the certificate is valid.
-        load_pem_x509_certificate(raw_cert.encode("utf-8"), default_backend())
+        try:
+            load_pem_x509_certificate(raw_cert.encode("utf-8"), default_backend())
+        except InvalidVersion as exc:
+            raise ValueError("Certificate in metadata is not a valid X.509 version") from exc
         return CertificateKeyPair(
             certificate_data=raw_cert,
         )
@@ -105,7 +108,10 @@ class ServiceProviderMetadataParser:
             return None
         raw_cert = format_cert(encryption_certs[0])
         # sanity check, make sure the certificate is valid.
-        load_pem_x509_certificate(raw_cert.encode("utf-8"), default_backend())
+        try:
+            load_pem_x509_certificate(raw_cert.encode("utf-8"), default_backend())
+        except InvalidVersion as exc:
+            raise ValueError("Certificate in metadata is not a valid X.509 version") from exc
         return CertificateKeyPair(
             certificate_data=raw_cert,
         )
@@ -135,7 +141,7 @@ class ServiceProviderMetadataParser:
 
     def parse(self, raw_xml: str) -> ServiceProviderMetadata:
         """Parse raw XML to ServiceProviderMetadata"""
-        root = fromstring(raw_xml.encode())
+        root = lxml_from_string(raw_xml.encode())
 
         entity_id = root.attrib["entityID"]
         sp_sso_descriptors = root.findall(f"{{{NS_SAML_METADATA}}}SPSSODescriptor")
