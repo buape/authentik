@@ -3,7 +3,11 @@ import "#flow/components/ak-flow-card";
 import { SlottedTemplateResult } from "#elements/types";
 
 import { BaseStage } from "#flow/stages/base";
-import { multiTabOrchestrateResume } from "#flow/tabs/orchestrator";
+import {
+    multiTabOrchestrateLeave,
+    multiTabOrchestrateResume,
+    suppressNextExitForSameOriginNavigation,
+} from "#flow/tabs/orchestrator";
 
 import { FlowChallengeResponseRequest, RedirectChallenge } from "@goauthentik/api";
 
@@ -22,6 +26,8 @@ export class RedirectStage extends BaseStage<RedirectChallenge, FlowChallengeRes
     @state()
     startedRedirect = false;
 
+    #keydownController: AbortController | null = null;
+
     static styles: CSSResult[] = [
         PFLogin,
         PFForm,
@@ -36,41 +42,52 @@ export class RedirectStage extends BaseStage<RedirectChallenge, FlowChallengeRes
     ];
 
     getURL(): string {
-        return new URL(this.challenge?.to || "", document.baseURI).toString();
+        return new URL(this.challenge?.to || "", this.ownerDocument.baseURI).toString();
     }
 
     // The current implementation expects the button and the stage to share the same DOM context,
     // and the same rootNode. If that changes, this will need to be updated.
-    get promptUser() {
+    public get promptUser(): boolean {
         return !!(this.getRootNode() as Element | undefined)?.querySelector(
             "ak-flow-inspector-button",
         )?.open;
     }
 
-    updated(changed: PropertyValues<this>): void {
+    protected keydownListener = (event: KeyboardEvent): void => {
+        if (event.key === "Enter") {
+            this.redirect();
+        }
+    };
+
+    public override disconnectedCallback(): void {
+        super.disconnectedCallback();
+
+        this.#keydownController?.abort();
+        this.#keydownController = null;
+    }
+
+    protected override updated(changed: PropertyValues<this>): void {
         super.updated(changed);
 
         if (!changed.has("challenge")) {
             return;
         }
+
         if (this.promptUser) {
-            document.addEventListener("keydown", (ev) => {
-                if (ev.key === "Enter") {
-                    this.redirect();
-                }
-            });
+            // Register the listener once for the element's lifetime; `updated` runs on every
+            // challenge change, and the AbortController tears it down on disconnect.
+            if (!this.#keydownController) {
+                this.#keydownController = new AbortController();
+
+                this.ownerDocument.addEventListener("keydown", this.keydownListener, {
+                    signal: this.#keydownController.signal,
+                });
+            }
+
             return;
         }
-        this.redirect();
-    }
 
-    isForeignURL() {
-        try {
-            const destination = new URL(this.challenge!.to, window.origin);
-            return destination.origin === window.origin;
-        } catch {
-            return true;
-        }
+        this.redirect();
     }
 
     async redirect() {
@@ -79,9 +96,24 @@ export class RedirectStage extends BaseStage<RedirectChallenge, FlowChallengeRes
             this.challenge?.to,
         );
 
-        if (this.isForeignURL()) {
+        // `final_redirect` marks the terminal redirect out of a completed flow. Only then do we
+        // resume other continuous-login tabs; intermediate hops (source stages, the same-origin
+        // SAML resume re-entry) skip orchestration entirely.
+        const finalRedirect = this.challenge?.finalRedirect ?? false;
+        if (finalRedirect) {
             await multiTabOrchestrateResume();
         }
+
+        // A foreign final redirect means we're leaving authentik for good, so signal our exit.
+        // Same-origin navigation suppress it, otherwise we'd look like we left mid-flow.
+        const url = new URL(this.challenge!.to, window.location.origin);
+
+        if (finalRedirect && url.origin !== window.location.origin) {
+            multiTabOrchestrateLeave();
+        } else {
+            suppressNextExitForSameOriginNavigation();
+        }
+
         window.location.assign(this.challenge!.to);
         this.startedRedirect = true;
     }
@@ -124,8 +156,9 @@ export class RedirectStage extends BaseStage<RedirectChallenge, FlowChallengeRes
                         type="submit"
                         class="pf-c-button pf-m-primary pf-m-block"
                         href=${this.challenge.to}
-                        @click=${() => {
-                            this.startedRedirect = true;
+                        @click=${(ev: Event) => {
+                            ev.preventDefault();
+                            this.redirect();
                         }}
                     >
                         ${msg("Follow redirect")}

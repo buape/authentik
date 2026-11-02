@@ -10,11 +10,10 @@ import { FlowMultitabController } from "./controllers/FlowMultitabController";
 import { FlowWebsocketClientController } from "./controllers/FlowWebsocketClientController";
 import Styles from "./FlowExecutor.css" with { type: "bundled-text" };
 
-import { DEFAULT_CONFIG } from "#common/api/config";
+import { aki } from "#common/api/client";
 import { APIError, parseAPIResponseError, pluckErrorDetail } from "#common/errors/network";
 import { globalAK } from "#common/global";
-import { configureSentry } from "#common/sentry/index";
-import { applyBackgroundImageProperty } from "#common/theme";
+import { applyBackgroundImageProperty, resolveThemedUrl } from "#common/theme";
 import { AKSessionAuthenticatedEvent } from "#common/ws/events";
 
 import { listen } from "#elements/decorators/listen";
@@ -157,9 +156,8 @@ export class FlowExecutor extends WithBrandConfig(Interface) implements StageHos
     //#region Lifecycle
 
     constructor() {
-        configureSentry();
         super();
-        this.#api = new FlowsApi(DEFAULT_CONFIG);
+        this.#api = aki(FlowsApi);
         this.addController(this.#flowIframeMessageController);
         this.addController(this.#flowMultitabController);
         this.addController(this.#flowWebsocketClientController);
@@ -180,8 +178,11 @@ export class FlowExecutor extends WithBrandConfig(Interface) implements StageHos
     #synchronizeFlowInfo() {
         if (!this.flowInfo || this.#layoutUsesSidebarFrames) return;
 
-        const background =
-            this.flowInfo.backgroundThemedUrls?.[this.activeTheme] || this.flowInfo.background;
+        const background = resolveThemedUrl(
+            this.activeTheme,
+            this.flowInfo.backgroundThemedUrls,
+            this.flowInfo.background,
+        );
 
         // Storybook has a different document structure, so we need to adjust the target accordingly.
         const target =
@@ -240,7 +241,7 @@ export class FlowExecutor extends WithBrandConfig(Interface) implements StageHos
             });
     };
 
-    public async firstUpdated(changed: PropertyValues<this>): Promise<void> {
+    protected override async firstUpdated(changed: PropertyValues<this>): Promise<void> {
         super.firstUpdated(changed);
 
         this.refresh().then(() => {
@@ -249,7 +250,7 @@ export class FlowExecutor extends WithBrandConfig(Interface) implements StageHos
     }
 
     // DOM post-processing has to happen after the render.
-    public updated(changedProperties: PropertyValues<this>) {
+    protected override updated(changedProperties: PropertyValues<this>) {
         super.updated(changedProperties);
 
         document.title = match(this.challenge?.flowInfo?.title)
@@ -383,7 +384,9 @@ export class FlowExecutor extends WithBrandConfig(Interface) implements StageHos
     //#region Render
 
     protected renderLoading(): SlottedTemplateResult {
-        return html`<slot name="placeholder"></slot>`;
+        return html`<ak-flow-card loading>
+            <span slot="title"> ${globalAK().flow?.title} </span>
+        </ak-flow-card>`;
     }
 
     protected renderFrameBackground(): SlottedTemplateResult {
@@ -424,7 +427,8 @@ export class FlowExecutor extends WithBrandConfig(Interface) implements StageHos
     protected override render(): SlottedTemplateResult {
         const { challenge, loading } = this;
 
-        return html`<ak-locale-select
+        return html`<div class="pf-c-login" data-layout=${this.layout} part="login">
+            <ak-locale-select
                 part="locale-select"
                 exportparts="label:locale-select-label,select:locale-select-select"
                 class="pf-m-dark"
@@ -455,7 +459,8 @@ export class FlowExecutor extends WithBrandConfig(Interface) implements StageHos
                         : this.renderLoading();
                 })}
             </main>
-            ${this.renderFooter()}`;
+            ${this.renderFooter()}
+        </div>`;
     }
 
     //#endregion

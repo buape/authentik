@@ -1,6 +1,7 @@
 """authentik multi-stage authentication engine"""
 
 from copy import deepcopy
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
@@ -23,6 +24,7 @@ from sentry_sdk.api import set_tag
 from structlog.stdlib import BoundLogger, get_logger
 
 from authentik.brands.models import Brand
+from authentik.common.oauth.constants import QS_LOGIN_HINT
 from authentik.events.models import Event, EventAction, cleanse_dict
 from authentik.flows.apps import HIST_FLOW_EXECUTION_STAGE_TIME
 from authentik.flows.challenge import (
@@ -154,7 +156,15 @@ class FlowExecutorView(APIView):
         self._logger.debug("f(exec): restored flow plan from token", plan=plan)
         return plan
 
+    def initialize_request(self, request, *args, **kwargs):
+        # Stubbed out `initialize_request` since we call the correct method early on
+        # in `dispatch`, and super().dispatch would call it again
+        return self.request or request
+
     def dispatch(self, request: HttpRequest, flow_slug: str) -> HttpResponse:
+        self.request = super().initialize_request(request)
+        self.initial(self.request)
+
         with start_span(op="authentik.flow.executor.dispatch", name=self.flow.slug) as span:
             span.set_data("authentik Flow", self.flow.slug)
             get_params = QueryDict(request.GET.get(QS_QUERY, ""))
@@ -196,7 +206,7 @@ class FlowExecutorView(APIView):
                     return self.handle_invalid_flow(exc)
                 except EmptyFlowException as exc:
                     self._logger.warning("f(exec): Flow is empty", exc=exc)
-                    # To match behaviour with loading an empty flow plan from cache,
+                    # To match behavior with loading an empty flow plan from cache,
                     # we don't show an error message here, but rather call _flow_done()
                     return self._flow_done()
             # We don't save the Plan after getting the next stage
@@ -392,14 +402,18 @@ class FlowExecutorView(APIView):
             # check if its an absolute URL or a relative one
             self.cancel()
             return to_stage_response(
-                self.request, redirect(self.plan.context.get(PLAN_CONTEXT_REDIRECT))
+                self.request,
+                redirect(self.plan.context.get(PLAN_CONTEXT_REDIRECT)),
+                final_redirect=True,
             )
         next_param = self.request.session.get(SESSION_KEY_GET, {}).get(
             NEXT_ARG_NAME, "authentik_core:root-redirect"
         )
         self.cancel()
         if next_param and not is_url_absolute(next_param):
-            return to_stage_response(self.request, redirect_with_qs(next_param))
+            return to_stage_response(
+                self.request, redirect_with_qs(next_param), final_redirect=True
+            )
         return to_stage_response(
             self.request, self.stage_invalid(error_message=_("Invalid next URL"))
         )
@@ -477,6 +491,17 @@ class FlowExecutorView(APIView):
 class CancelView(View):
     """View which cancels the currently active plan"""
 
+    def clean_next_url(self, url: str) -> str:
+        """Remove any user identifiers from the URL to prevent loops"""
+        qs_to_remove = [QS_LOGIN_HINT]
+        parts = urlsplit(url)
+        if not any(x in parts.query for x in qs_to_remove):
+            return url
+        query = QueryDict(parts.query, mutable=True)
+        for qs in qs_to_remove:
+            query.pop(qs, None)
+        return urlunsplit(parts._replace(query=urlencode(sorted(query.items()), doseq=True)))
+
     def get(self, request: HttpRequest) -> HttpResponse:
         """View which canels the currently active plan"""
         if SESSION_KEY_PLAN in request.session:
@@ -484,7 +509,8 @@ class CancelView(View):
             LOGGER.debug("Canceled current plan")
         next_url = self.request.GET.get(NEXT_ARG_NAME)
         if next_url and not is_url_absolute(next_url):
-            return redirect(next_url)
+            # Ensure that we get rid of any user identifiers from the URL
+            return redirect(self.clean_next_url(next_url))
         return redirect("authentik_flows:default-invalidation")
 
 
@@ -541,7 +567,9 @@ class ToDefaultFlow(View):
         return redirect_with_qs("authentik_core:if-flow", request.GET, flow_slug=flow.slug)
 
 
-def to_stage_response(request: HttpRequest, source: HttpResponse) -> HttpResponse:
+def to_stage_response(
+    request: HttpRequest, source: HttpResponse, final_redirect: bool = False
+) -> HttpResponse:
     """Convert normal HttpResponse into JSON Response"""
     if (
         isinstance(source, HttpResponseRedirect)
@@ -560,6 +588,7 @@ def to_stage_response(request: HttpRequest, source: HttpResponse) -> HttpRespons
             RedirectChallenge(
                 {
                     "to": str(redirect_url),
+                    "final_redirect": final_redirect,
                 }
             )
         )
